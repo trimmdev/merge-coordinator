@@ -37,6 +37,7 @@ function loadConfig() {
     base: cfg.base || 'main',
     mergeMethod: cfg.mergeMethod || 'rebase',           // rebase | squash | merge
     requiredCheck: cfg.requiredCheck || '',             // '' = use overall check rollup
+    checkWorkflow: cfg.checkWorkflow || '',             // e.g. 'ci.yml' → read gate via Actions API (fine-grained-token safe)
     holdLabel: cfg.holdLabel || 'hold',
     lanes: cfg.lanes || [],                             // [{name, match:[globs], serialize, revalidate}]
     revertOn: cfg.revertOn || null,                     // {workflow, jobs:[...]} or null
@@ -103,15 +104,13 @@ function classify(files) {
 
 // ── queue + per-PR facts ─────────────────────────────────────────────────────
 function queue() {
-  const F = 'number,title,isDraft,mergeable,mergeStateStatus,autoMergeRequest,labels,headRefName,author,createdAt,updatedAt';
-  // statusCheckRollup needs the token's "Checks" (and "Commit statuses") read scope.
-  // If that scope is missing (or the API blips), degrade to "checks unknown → don't
-  // arm + warn" instead of crashing the whole sweep.
-  let prs = ghJson(['pr', 'list', '--repo', REPO, '--state', 'open', '--base', BASE, '--limit', '100', '--json', F + ',statusCheckRollup'], { allowFail: true });
+  const F = 'number,title,isDraft,mergeable,mergeStateStatus,autoMergeRequest,labels,headRefName,headRefOid,author,createdAt,updatedAt';
+  const useActions = !!CFG.checkWorkflow;
+  let prs = ghJson(['pr', 'list', '--repo', REPO, '--state', 'open', '--base', BASE, '--limit', '100', '--json', useActions ? F : F + ',statusCheckRollup'], { allowFail: true });
   let checksOk = true;
   if (failed(prs)) {
     checksOk = false;
-    log('⚠️  could not read check status — the token likely needs "Checks: read" (and "Commit statuses: read"). Treating checks as unknown; will NOT arm until fixed.');
+    log('⚠️  could not read check status via statusCheckRollup — a fine-grained token can\'t read check runs. Set `checkWorkflow` in the config to read the gate via the Actions API instead. Treating checks as unknown; will NOT arm until fixed.');
     prs = ghJson(['pr', 'list', '--repo', REPO, '--state', 'open', '--base', BASE, '--limit', '100', '--json', F]) || [];
   }
   return (prs || []).map(p => {
@@ -120,8 +119,21 @@ function queue() {
       labels: (p.labels || []).map(l => l.name),
       armed: !!p.autoMergeRequest,
       conflicting: p.mergeStateStatus === 'DIRTY' || p.mergeable === 'CONFLICTING',
-      checks: checksOk ? rollup(p.statusCheckRollup) : 'unknown' };
+      checks: useActions ? gateState(p.headRefOid) : (checksOk ? rollup(p.statusCheckRollup) : 'unknown') };
   });
+}
+// Read the gate via the Actions API (the CI workflow's run conclusion for this SHA).
+// Works with a fine-grained token's "Actions: read" — fine-grained tokens CANNOT read
+// check runs (there is no "Checks" permission to grant), so statusCheckRollup fails for
+// them. Set `checkWorkflow` in the config to the workflow file whose conclusion is your gate.
+function gateState(sha) {
+  if (!sha) return 'pending';
+  const r = gh(['api', `repos/${REPO}/actions/workflows/${CFG.checkWorkflow}/runs?head_sha=${sha}&per_page=1`,
+    '--jq', '.workflow_runs[0] | ((.status // "none") + "|" + (.conclusion // ""))'], { allowFail: true });
+  if (failed(r) || !r || r.startsWith('none')) return 'pending';
+  const [status, concl] = r.split('|');
+  if (status !== 'completed') return 'pending';
+  return concl === 'success' ? 'green' : 'red';
 }
 // Returns the changed paths, or null if the API call failed — so a transient error
 // can't silently drop a PR into the wrong lane (we skip it this sweep instead).

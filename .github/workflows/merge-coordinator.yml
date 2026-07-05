@@ -35,8 +35,7 @@ on:
 permissions:
   contents: read
   pull-requests: read
-  checks: read       # read check-run results (statusCheckRollup) in DRY fallback
-  statuses: read
+  actions: read      # read CI workflow run conclusions (gate status) in the DRY fallback
 
 concurrency:
   group: merge-coordinator

@@ -2,6 +2,7 @@
   "base": "main",
   "mergeMethod": "rebase",
   "requiredCheck": "",
+  "checkWorkflow": "ci.yml",
   "holdLabel": "hold",
   "lanes": [
     {

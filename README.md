@@ -81,12 +81,18 @@ So give it a **fine-grained personal access token** (or a GitHub App token):
 
 - **Repository access:** only the repo(s) you want it to run on.
 - **Permissions:** *Contents* → Read & write · *Pull requests* → Read & write · *Workflows* →
-  Read & write · *Actions* → Read & write · *Checks* → **Read-only** · *Commit statuses* →
-  **Read-only**. (The last two are required to read each PR's check results — without them the
-  coordinator can't tell green from red and won't arm anything.)
+  Read & write · *Actions* → **Read-only** · *Metadata* → Read-only (auto).
 
 Store it as the `COORD_TOKEN` secret. It **still can't bypass your branch protection** — it can only
 enable auto-merge (which waits for green) and open PRs (which run your checks).
+
+> **Reading each PR's green/red — important for fine-grained tokens.** Fine-grained PATs **cannot
+> read check runs** (GitHub exposes no "Checks" permission to grant), so the usual `statusCheckRollup`
+> fails for them. Instead, set **`checkWorkflow`** in the config to your CI workflow file (e.g.
+> `"ci.yml"`) — the coordinator then reads the gate from that workflow's **run conclusion** via the
+> *Actions: read* permission, which fine-grained tokens *do* support. (If you use a classic PAT or a
+> GitHub App token that can read checks, you can leave `checkWorkflow` empty and it uses
+> `statusCheckRollup`.)
 
 ## Configuration
 
@@ -110,7 +116,8 @@ enable auto-merge (which waits for green) and open PRs (which run your checks).
 |---|---|
 | `base` | Branch PRs target and merge into. Default `main`. |
 | `mergeMethod` | `rebase` \| `squash` \| `merge`. |
-| `requiredCheck` | Name of your single required check (e.g. a `gate` job). If set, arm-eligibility keys on it alone; leave `""` to use the overall check rollup. |
+| `requiredCheck` | Name of your single required check (e.g. a `gate` job). If set, arm-eligibility keys on it alone; leave `""` to use the overall check rollup. (Only used when `checkWorkflow` is empty.) |
+| `checkWorkflow` | CI workflow file (e.g. `"ci.yml"`) whose run conclusion == your gate. **Set this if you use a fine-grained token** — it reads status via *Actions: read* instead of `statusCheckRollup` (which fine-grained tokens can't read). Empty → use `statusCheckRollup`. |
 | `holdLabel` | Label that parks a PR (never auto-merged). Default `hold`. |
 | `lanes` | Rules matched against a PR's changed files. A PR is **serial** (one-at-a-time) if it matches any lane with `serialize:true`, and **revalidated** (branch updated when stale) if it matches any lane with `revalidate:true`. No match → parallel, no revalidation. Globs support `*` and `**`. |
 | `revertOn` | `null`, or `{ "workflow": "nightly.yml", "jobs": ["e2e"] }` — if that post-merge workflow's run on the base fails (optionally only when one of `jobs` failed), open + arm a revert PR. Omit `jobs` to trigger on any failure. |
