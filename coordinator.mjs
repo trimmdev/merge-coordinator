@@ -207,7 +207,7 @@ const byAge = (a, b) => new Date(a.createdAt) - new Date(b.createdAt);
 async function sweep(dry) {
   const prs = queue();
   const acts = [];
-  const rec = (pr, m) => { if (m && !/already|not armed|up to date/.test(m)) acts.push(`#${pr.number} ${m}`); };
+  const rec = (pr, m) => { if (m && !/already|not armed|up to date/.test(m)) acts.push({ pr, m }); };
 
   const serial = prs.filter(p => p.serialize);
   const parallel = prs.filter(p => !p.serialize);
@@ -226,19 +226,19 @@ async function sweep(dry) {
     rec(leader, arm(leader, dry));
     if (leader.revalidate && behindBy(leader.headRefName) > 0) rec(leader, updateBranch(leader, dry));
     const waiting = ready.filter(p => p.number !== leader.number).map(p => `#${p.number}`);
-    if (waiting.length) acts.push(`serial lane: leader #${leader.number}, holding ${waiting.join(' ')}`);
+    if (waiting.length) acts.push({ note: `serial lane: #${leader.number} goes first (one at a time) — holding ${waiting.join(' ')} until it lands` });
   }
 
   board(prs);
   const rev = await revertCheck(dry);
-  if (acts.length || rev) await ping(`🤝 **merge-coordinator**${dry ? ' (dry)' : ''} — ${acts.length ? acts.join(' · ') : 'no queue actions'}${rev ? `\n${rev}` : ''}`);
+  if (acts.length || rev) await ping(sweepReport(prs, acts, rev, dry));
   else log('sweep: nothing to do.');
 }
 
 async function status() {
   const prs = queue();
   board(prs);
-  await ping(`📋 **merge queue** (${prs.length} open)\n${prs.map(fmt).join('\n') || '_empty_'}`);
+  await ping(`📋 **merge queue** (${prs.length} open)\n${prs.map(fmt).join('\n') || '_empty_'}\n\n${LEGEND}`);
 }
 function board(prs) { log(`\n── ${REPO} · ${prs.length} open PR(s) → ${BASE} ──`); prs.forEach(p => log('  ' + fmt(p))); log(''); }
 function fmt(p) {
@@ -253,6 +253,60 @@ function fmt(p) {
 }
 const trunc = (s, n) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
 
+// ── Discord message composition (rich + self-explaining) ─────────────────────
+// A ping should say WHAT changed, WHY, and whether the human must act — so every
+// action carries a plain-English gloss + the live check state + a click-through
+// PR link, and a footer defines the vocabulary ("what does ARMED mean?").
+const GATE_ICON = { green: '🟢', pending: '🟡', red: '🔴', unknown: '⚪' };
+const gateIcon = c => GATE_ICON[c] || '⚪';
+const LEGEND =
+  '_“ARMED” = auto-merge is enabled: the PR is queued and the platform merges it **by itself** the instant ' +
+  'its required checks pass — it is **not merged yet**, and there is nothing to do. The coordinator only arms ' +
+  'PRs that are already eligible (not draft/held/conflicting, checks not red); it never bypasses required ' +
+  'checks or branch protection. Use `hold <#>` to park one you want to review first._';
+function explainAction(m) {
+  if (/^ARMED/.test(m))          return 'auto-merge is now ON — it lands by itself the moment its required checks pass; nothing to do';
+  if (/^DISARMED/.test(m))       return 'auto-merge turned OFF';
+  if (/^UPDATED-BRANCH/.test(m)) return 'branch was behind base — refreshed it, so checks re-run against the current base before it can land';
+  if (/^HELD/.test(m))           return 'parked — it will NOT auto-merge until it is unheld';
+  if (/^UNHELD/.test(m))         return 'un-parked — eligible to be armed again';
+  if (/^WOULD/.test(m))          return 'dry run only — no change was made; this is what a live sweep would do';
+  if (/FAILED/.test(m))          return 'the action failed — see the error; the next sweep retries';
+  return '';
+}
+function fmtAct(a) {
+  if (a.note) return `• ${a.note}`;
+  const { pr, m } = a;
+  const who = pr.author && pr.author.login ? ` · @${pr.author.login}` : '';
+  const lane = pr.serialize ? 'serial lane (one at a time)' : 'parallel lane';
+  const why = explainAction(m);
+  const url = `https://github.com/${REPO}/pull/${pr.number}`;
+  const head = `**#${pr.number} — ${m}** · ${trunc(pr.title, 56)}`;
+  const meta = `${gateIcon(pr.checks)} checks ${pr.checks} · ${lane}${who}`;
+  return `${head}\n   ${why ? why + '\n   ' : ''}${meta}\n   ${url}`;
+}
+function queueSnapshot(prs) {
+  const armed = prs.filter(p => p.armed).length;
+  const waiting = prs.filter(p => p.armed && p.checks !== 'green').length;
+  const held = prs.filter(p => p.labels.includes(HOLD)).length;
+  const blocked = prs.filter(p => p.checks === 'red' || p.conflicting).length;
+  const bits = [`${prs.length} open`, `${armed} armed`];
+  if (waiting) bits.push(`${waiting} waiting on checks`);
+  if (held) bits.push(`${held} held`);
+  if (blocked) bits.push(`${blocked} blocked`);
+  return bits.join(' · ');
+}
+function sweepReport(prs, acts, rev, dry) {
+  const parts = [
+    `🤝 **merge-coordinator**${dry ? ' (dry run — no changes made)' : ''} · ${queueSnapshot(prs)}`,
+    '',
+    acts.map(fmtAct).join('\n'),
+  ];
+  if (rev) parts.push('', rev);
+  parts.push('', LEGEND);
+  return parts.join('\n');
+}
+
 async function armOne(n, dry) {
   const prs = queue(); const pr = prs.find(p => p.number === n);
   if (!pr) return ping(`arm: PR #${n} not open on ${BASE}.`);
@@ -262,13 +316,18 @@ async function armOne(n, dry) {
     for (const o of prs.filter(p => p.serialize && p.number !== n && p.armed)) disarm(o, dry);
     if (pr.revalidate && behindBy(pr.headRefName) > 0) updateBranch(pr, dry);
   }
-  await ping(`arm #${n} (${pr.lane}): ${arm(pr, dry)}`);
+  const r = arm(pr, dry);
+  const gloss = explainAction(r);
+  await ping(`🤝 **arm #${n}** (${pr.lane} lane) — ${r}\n   ${gloss ? gloss + '\n   ' : ''}${gateIcon(pr.checks)} checks ${pr.checks} · https://github.com/${REPO}/pull/${n}\n\n${LEGEND}`);
 }
 async function holdOne(n, on, dry) {
   const prs = queue(); const pr = prs.find(p => p.number === n);
   if (!pr) return ping(`${on ? 'hold' : 'unhold'}: PR #${n} not found.`);
   const h = setHold(pr, on, dry); const d = on ? disarm(pr, dry) : '';
-  await ping(`${on ? 'hold' : 'unhold'} #${n}: ${h}${d && d !== 'not armed' ? ' · ' + d : ''}`);
+  const note = on
+    ? 'parked — it will NOT auto-merge until you `unhold` it'
+    : 'un-parked — the coordinator may arm it again on the next sweep';
+  await ping(`🤝 **${on ? 'hold' : 'unhold'} #${n}** — ${h}${d && d !== 'not armed' ? ' · ' + d : ''}\n   ${note}\n   https://github.com/${REPO}/pull/${n}`);
 }
 
 // ── post-merge-red → auto-revert (opt-in via config.revertOn) ────────────────
