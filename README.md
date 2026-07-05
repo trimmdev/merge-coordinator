@@ -81,7 +81,9 @@ So give it a **fine-grained personal access token** (or a GitHub App token):
 
 - **Repository access:** only the repo(s) you want it to run on.
 - **Permissions:** *Contents* → Read & write · *Pull requests* → Read & write · *Workflows* →
-  Read & write · *Actions* → Read & write.
+  Read & write · *Actions* → Read & write · *Checks* → **Read-only** · *Commit statuses* →
+  **Read-only**. (The last two are required to read each PR's check results — without them the
+  coordinator can't tell green from red and won't arm anything.)
 
 Store it as the `COORD_TOKEN` secret. It **still can't bypass your branch protection** — it can only
 enable auto-merge (which waits for green) and open PRs (which run your checks).

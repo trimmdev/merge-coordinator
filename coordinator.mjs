@@ -103,15 +103,24 @@ function classify(files) {
 
 // ── queue + per-PR facts ─────────────────────────────────────────────────────
 function queue() {
-  const prs = ghJson(['pr', 'list', '--repo', REPO, '--state', 'open', '--base', BASE, '--limit', '100',
-    '--json', 'number,title,isDraft,mergeable,mergeStateStatus,autoMergeRequest,labels,headRefName,author,createdAt,updatedAt,statusCheckRollup']) || [];
-  return prs.map(p => {
+  const F = 'number,title,isDraft,mergeable,mergeStateStatus,autoMergeRequest,labels,headRefName,author,createdAt,updatedAt';
+  // statusCheckRollup needs the token's "Checks" (and "Commit statuses") read scope.
+  // If that scope is missing (or the API blips), degrade to "checks unknown → don't
+  // arm + warn" instead of crashing the whole sweep.
+  let prs = ghJson(['pr', 'list', '--repo', REPO, '--state', 'open', '--base', BASE, '--limit', '100', '--json', F + ',statusCheckRollup'], { allowFail: true });
+  let checksOk = true;
+  if (failed(prs)) {
+    checksOk = false;
+    log('⚠️  could not read check status — the token likely needs "Checks: read" (and "Commit statuses: read"). Treating checks as unknown; will NOT arm until fixed.');
+    prs = ghJson(['pr', 'list', '--repo', REPO, '--state', 'open', '--base', BASE, '--limit', '100', '--json', F]) || [];
+  }
+  return (prs || []).map(p => {
     const files = prFiles(p.number);                 // null = fetch failed (don't guess the lane)
     return { ...p, files, filesUnknown: files === null, ...classify(files || []),
       labels: (p.labels || []).map(l => l.name),
       armed: !!p.autoMergeRequest,
       conflicting: p.mergeStateStatus === 'DIRTY' || p.mergeable === 'CONFLICTING',
-      checks: rollup(p.statusCheckRollup) };
+      checks: checksOk ? rollup(p.statusCheckRollup) : 'unknown' };
   });
 }
 // Returns the changed paths, or null if the API call failed — so a transient error
@@ -173,6 +182,7 @@ function setHold(pr, on, dry) {
 }
 function eligible(pr) {
   if (pr.filesUnknown) return 'files-unknown';   // couldn't read the diff → skip, retry next sweep
+  if (pr.checks === 'unknown') return 'checks-unknown'; // couldn't read checks → don't risk arming
   if (pr.isDraft) return 'draft';
   if (pr.labels.includes(HOLD)) return 'hold';
   if (pr.conflicting) return 'needs-rebase';
