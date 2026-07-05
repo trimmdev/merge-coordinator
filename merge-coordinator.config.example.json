@@ -1,0 +1,21 @@
+{
+  "base": "main",
+  "mergeMethod": "rebase",
+  "requiredCheck": "",
+  "holdLabel": "hold",
+  "lanes": [
+    {
+      "name": "serial-core",
+      "match": ["src/core/**", "migrations/**", "schema/**"],
+      "serialize": true,
+      "revalidate": true
+    },
+    {
+      "name": "backend",
+      "match": ["server/**", "api/**"],
+      "serialize": false,
+      "revalidate": true
+    }
+  ],
+  "revertOn": null
+}

@@ -1,0 +1,69 @@
+# merge-coordinator — the 24/7 cloud brain.
+#
+# Runs coordinator.mjs on GitHub Actions so it lands PRs with no machine of yours
+# online. It arms every eligible PR, keeps your "serial" lanes to one-at-a-time,
+# re-validates stale PRs, re-arms on silent disarm, and (optionally) auto-reverts
+# a failed post-merge run. It CANNOT bypass your required checks / branch protection.
+#
+# IDENTITY: writes run as COORD_TOKEN — a fine-grained PAT (or App token) — NOT the
+# default GITHUB_TOKEN, because a branch update / PR opened by GITHUB_TOKEN does not
+# re-trigger workflows, so your checks would not re-run. Until COORD_TOKEN is set the
+# coordinator runs DRY (reports, never mutates).
+name: merge-coordinator
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, auto_merge_disabled, labeled, unlabeled]
+  check_suite:
+    types: [completed]          # a CI run finished → re-check the queue
+  push:
+    branches: [main]            # change if your base branch differs
+  schedule:
+    - cron: '7,22,37,52 * * * *' # backstop for any dropped event
+  workflow_dispatch:
+    inputs:
+      action:
+        description: coordinator action
+        type: choice
+        default: sweep
+        options: [sweep, status, arm, hold, unhold, revert-check]
+      pr:
+        description: PR number (for arm/hold/unhold)
+        type: string
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: merge-coordinator
+  cancel-in-progress: false
+
+jobs:
+  coordinate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: run coordinator
+        env:
+          GH_TOKEN: ${{ secrets.COORD_TOKEN || github.token }}
+          COORD: ${{ secrets.COORD_TOKEN }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          EVENT: ${{ github.event_name }}
+          IN_ACTION: ${{ github.event.inputs.action }}
+          IN_PR: ${{ github.event.inputs.pr }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = "workflow_dispatch" ]; then MODE="${IN_ACTION:-sweep}"; PR="${IN_PR:-}"; else MODE="sweep"; PR=""; fi
+          DRY=""; QUIET=""
+          if [ -z "${COORD:-}" ]; then
+            DRY="--dry"; echo "::warning::COORD_TOKEN not set — running DRY. Set it to activate."
+            [ "$EVENT" != "workflow_dispatch" ] && QUIET="--quiet"
+          fi
+          echo "coordinator: event=$EVENT mode=$MODE pr=${PR:-none} dry=${DRY:-no}"
+          node coordinator.mjs "$MODE" ${PR:+$PR} ${DRY:+$DRY} ${QUIET:+$QUIET}

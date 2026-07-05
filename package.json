@@ -1,0 +1,14 @@
+{
+  "name": "merge-coordinator",
+  "version": "1.0.0",
+  "description": "A 24/7 GitHub Actions coordinator that arms and lands your pull requests automatically — lane-aware, stale-safe, and unable to bypass your required checks.",
+  "type": "module",
+  "bin": { "merge-coordinator": "coordinator.mjs" },
+  "scripts": {
+    "status": "node coordinator.mjs status",
+    "sweep": "node coordinator.mjs sweep"
+  },
+  "keywords": ["github", "auto-merge", "merge-queue", "ci", "pull-requests", "automation", "coding-agents"],
+  "license": "MIT",
+  "engines": { "node": ">=18" }
+}

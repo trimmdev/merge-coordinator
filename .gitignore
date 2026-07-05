@@ -1,0 +1,4 @@
+node_modules/
+*.log
+.DS_Store
+# NOTE: commit your merge-coordinator.config.json — the Actions runner reads it from the repo.
